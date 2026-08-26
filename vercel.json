@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/admin", "destination": "/index.html" },
+    { "source": "/entrar", "destination": "/index.html" },
+    { "source": "/painel", "destination": "/index.html" },
+    { "source": "/esqueci-senha", "destination": "/index.html" },
+    { "source": "/redefinir-senha", "destination": "/index.html" },
+    { "source": "/validar-email", "destination": "/index.html" },
+    { "source": "/portfolio/:slug*", "destination": "/index.html" }
+  ]
+}

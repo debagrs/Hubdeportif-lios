@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { LayoutGrid, LogIn, Menu, X, UserRoundCog } from 'lucide-react';
 import LabLogo from './LabLogo';
 
-export default function HubHeader({ compact = false }: { compact?: boolean }) {
+export default function HubHeader({ compact = false, sessionLabel = '' }: { compact?: boolean; sessionLabel?: string }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -23,8 +23,8 @@ export default function HubHeader({ compact = false }: { compact?: boolean }) {
               <LayoutGrid size={20} />
             </button>
           )}
-          <button className="lab-pill-btn" onClick={() => navigate('/entrar')}>
-            <LogIn size={19} /><span>Entrar</span>
+          <button className="lab-pill-btn" onClick={() => navigate(sessionLabel ? '/painel' : '/entrar')}>
+            {sessionLabel ? <UserRoundCog size={19}/> : <LogIn size={19} />}<span>{sessionLabel || 'Entrar'}</span>
           </button>
           <button className="lab-icon-btn" onClick={() => setOpen(v => !v)} aria-label={open ? 'Fechar menu' : 'Abrir menu'} aria-expanded={open}>
             {open ? <X size={20} /> : <Menu size={20} />}
@@ -50,6 +50,10 @@ export default function HubHeader({ compact = false }: { compact?: boolean }) {
               <button className="portfolio-card" style={{ ['--student-accent' as string]: '#D2A979', textAlign: 'left' }} onClick={() => { setOpen(false); navigate('/entrar'); }}>
                 <div><UserRoundCog size={34} color="#D2A979" /><h3>Área do estudante</h3><p>Editar identidade, projetos, imagens e configurações do próprio portfólio.</p></div>
                 <div className="portfolio-card-foot"><span>Acesso protegido</span><span className="portfolio-card-arrow">↗</span></div>
+              </button>
+              <button className="portfolio-card" style={{ ['--student-accent' as string]: '#F48A79', textAlign: 'left' }} onClick={() => { setOpen(false); navigate('/admin'); }}>
+                <div><UserRoundCog size={34} color="#F48A79" /><h3>Administração</h3><p>Área da professora para convidar estudantes, criar acessos e acompanhar todos os portfólios.</p></div>
+                <div className="portfolio-card-foot"><span>Professora</span><span className="portfolio-card-arrow">↗</span></div>
               </button>
             </div>
           </div>

@@ -607,3 +607,26 @@
 .pf-project-media > .pf-media-fallback,.pf-hero-media > .pf-media-fallback,.pf-avatar > .pf-media-fallback { position:absolute; inset:0; height:100%; min-height:100%; }
 .pf-gallery .pf-media-fallback { aspect-ratio:1; min-height:0; border-radius:calc(var(--pf-radius) * .55); }
 .pf-gallery-after-overlay { margin:0; padding:12px; background:var(--pf-surface); border-top:var(--pf-border-width) solid var(--pf-border); }
+
+/* Sessão explícita no painel: evita confundir a conta da professora com a de um aluno. */
+.dashboard-session {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  padding:12px 16px;
+  margin:-4px 0 18px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:16px;
+  background:rgba(255,255,255,.025);
+}
+.dashboard-session span,
+.dashboard-session em {
+  font:800 .66rem/1.2 "JetBrains Mono", monospace;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+}
+.dashboard-session span { color:#7f8794; }
+.dashboard-session strong { color:#f5f5f7; font-size:.88rem; overflow-wrap:anywhere; }
+.dashboard-session em { color:#00FFFF; font-style:normal; margin-left:auto; }
+@media (max-width:640px){ .dashboard-session em{margin-left:0;width:100%;} }

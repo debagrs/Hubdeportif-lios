@@ -173,10 +173,54 @@ function verifyPassword(password: string, stored: string) {
 async function seedAdmin() {
   const email = normalizeEmail(process.env.HUB_ADMIN_EMAIL);
   const password = text(process.env.HUB_ADMIN_PASSWORD);
+
+  // A conta administradora é controlada pelas variáveis da Vercel.
+  // Assim, se HUB_ADMIN_EMAIL ou HUB_ADMIN_PASSWORD forem alterados e
+  // houver um novo deploy, o usuário admin existente é sincronizado
+  // automaticamente em vez de continuar preso às credenciais antigas.
   if (!email || !password) return;
-  const existing = await query('SELECT id FROM hub_users WHERE role = $1 LIMIT 1', ['admin']);
-  if (existing.length) return;
-  await query('INSERT INTO hub_users (id,email,password_hash,role,email_verified) VALUES ($1,$2,$3,$4,TRUE)', [randomUUID(), email, hashPassword(password), 'admin']);
+
+  const admins = await query('SELECT id,email,password_hash FROM hub_users WHERE role=$1 ORDER BY created_at ASC LIMIT 1', ['admin']);
+  const admin = admins[0];
+
+  if (!admin) {
+    const emailOwner = await query('SELECT id,role FROM hub_users WHERE email=$1 LIMIT 1', [email]);
+    if (emailOwner[0]) {
+      throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
+    }
+
+    await query(
+      'INSERT INTO hub_users (id,email,password_hash,role,email_verified) VALUES ($1,$2,$3,$4,TRUE)',
+      [randomUUID(), email, hashPassword(password), 'admin'],
+    );
+    return;
+  }
+
+  const emailChanged = normalizeEmail(admin.email) !== email;
+  const passwordChanged = !verifyPassword(password, text(admin.password_hash));
+
+  if (!emailChanged && !passwordChanged) {
+    if (!admin.email_verified) {
+      await query('UPDATE hub_users SET email_verified=TRUE,updated_at=NOW() WHERE id=$1', [admin.id]);
+    }
+    return;
+  }
+
+  if (emailChanged) {
+    const emailOwner = await query('SELECT id,role FROM hub_users WHERE email=$1 AND id<>$2 LIMIT 1', [email, admin.id]);
+    if (emailOwner[0]) {
+      throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
+    }
+  }
+
+  await query(
+    'UPDATE hub_users SET email=$1,password_hash=$2,email_verified=TRUE,updated_at=NOW() WHERE id=$3',
+    [email, passwordChanged ? hashPassword(password) : admin.password_hash, admin.id],
+  );
+
+  // Se a credencial administrativa mudou, encerra sessões anteriores.
+  // O próximo login já usa os valores atuais de HUB_ADMIN_EMAIL/HUB_ADMIN_PASSWORD.
+  await query('DELETE FROM hub_sessions WHERE user_id=$1', [admin.id]);
 }
 
 function appUrl(req?: VercelRequest) {
@@ -322,8 +366,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const action = firstQuery(req.query.action) || 'health';
   try {
     if (action === 'health') {
-      if (dbConfigured()) await ensureSchema();
-      return res.status(200).json({ ok:true, configured:dbConfigured(), emailConfigured:mailConfigured(), storageConfigured:storageConfigured(), mailProvider:MAIL_PROVIDER });
+      let adminReady = false;
+      if (dbConfigured()) {
+        await ensureSchema();
+        const adminRows = await query("SELECT id FROM hub_users WHERE role='admin' LIMIT 1");
+        adminReady = Boolean(adminRows[0]);
+      }
+      return res.status(200).json({
+        ok:true,
+        configured:dbConfigured(),
+        adminConfigured:has('HUB_ADMIN_EMAIL') && has('HUB_ADMIN_PASSWORD'),
+        adminReady,
+        emailConfigured:mailConfigured(),
+        storageConfigured:storageConfigured(),
+        mailProvider:MAIL_PROVIDER,
+      });
     }
 
     if (action === 'public-portfolios') {

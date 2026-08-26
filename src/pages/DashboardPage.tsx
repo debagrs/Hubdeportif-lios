@@ -28,7 +28,13 @@ export default function DashboardPage() {
   const [invites,setInvites] = useState<StudentInvite[]>([]);
   const [selectedStudentId,setSelectedStudentId] = useState<string|undefined>();
   const [tab,setTab] = useState<Tab>('portfolio');
-  const [projectDraft,setProjectDraft] = useState<Project|null>(null);
+  const [projectDraft,setProjectDraftState] = useState<Project|null>(null);
+  const projectDraftRef = React.useRef<Project|null>(null);
+  const setProjectDraft = React.useCallback((next: Project|null|((current:Project|null)=>Project|null)) => {
+    const resolved = typeof next === 'function' ? (next as (current:Project|null)=>Project|null)(projectDraftRef.current) : next;
+    projectDraftRef.current = resolved;
+    setProjectDraftState(resolved);
+  }, []);
   const [message,setMessage] = useState('');
   const [error,setError] = useState('');
   const [busy,setBusy] = useState(false);
@@ -77,19 +83,58 @@ export default function DashboardPage() {
 
   async function uploadPortfolioImage(file: File,kind:'avatar'|'hero'){
     if(!portfolio)return;setBusy(true);clearNotice();
-    try{const url=await hubApi.uploadImage(file,kind,portfolio.id);setPortfolio(p=>p?{...p,...(kind==='avatar'?{avatarUrl:url}:{heroImageUrl:url})}:p);setMessage('Imagem enviada. Salve o portfólio para confirmar.');}
+    try{
+      const url=await hubApi.uploadImage(file,kind,portfolio.id);
+      const updated={...portfolio,...(kind==='avatar'?{avatarUrl:url}:{heroImageUrl:url})};
+      setPortfolio(updated);
+      // O upload agora também persiste a URL imediatamente no Neon. Antes, a imagem
+      // podia aparecer na prévia e sumir no site público se o usuário não clicasse em Salvar.
+      const result=await hubApi.saveMyPortfolio({...updated,theme:mergeTheme(updated.theme)},isAdmin?selectedStudentId:undefined);
+      setPortfolio({...result.portfolio,theme:mergeTheme(result.portfolio.theme)});
+      setMessage('Imagem enviada e salva. Ela já está disponível no portfólio público.');
+      if(isAdmin)await refreshStudents();
+    }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
   }
 
+  async function persistExistingProject(updated:Project){
+    if(!portfolio||!updated.id)return updated;
+    const result=await hubApi.saveProject({...updated,portfolioId:portfolio.id,slug:updated.slug||slugify(updated.title)});
+    const saved=result.project;
+    setProjects(current=>current.some(item=>item.id===saved.id)?current.map(item=>item.id===saved.id?saved:item):[...current,saved]);
+    setProjectDraft(saved);
+    return saved;
+  }
+
   async function uploadProjectImage(file:File,kind:'cover'|'gallery'){
-    if(!portfolio||!projectDraft)return;setBusy(true);clearNotice();
-    try{const url=await hubApi.uploadImage(file,kind,portfolio.id);setProjectDraft(p=>p?(kind==='cover'?{...p,coverUrl:url}:{...p,gallery:[...(p.gallery||[]),url]}):p);setMessage('Imagem enviada. Salve o projeto.');}
+    const current=projectDraftRef.current;
+    if(!portfolio||!current)return;setBusy(true);clearNotice();
+    try{
+      const url=await hubApi.uploadImage(file,kind,portfolio.id);
+      const latest=projectDraftRef.current||current;
+      const updated=kind==='cover'?{...latest,coverUrl:url}:{...latest,gallery:[...(latest.gallery||[]),url]};
+      setProjectDraft(updated);
+      if(updated.id){
+        await persistExistingProject(updated);
+        setMessage('Imagem enviada e salva. Ela já está disponível no portfólio público.');
+      }else{
+        setMessage('Imagem enviada. Como este projeto ainda é novo, clique em Salvar projeto para publicá-la.');
+      }
+    }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
   }
 
   async function uploadProjectPdf(file:File){
-    if(!portfolio||!projectDraft)return;setBusy(true);clearNotice();
-    try{const url=await hubApi.uploadPdf(file,portfolio.id);setProjectDraft(p=>p?{...p,attachments:[...(p.attachments||[]),{id:crypto.randomUUID(),type:'pdf',title:file.name.replace(/\.pdf$/i,''),url}]}:p);setMessage('PDF enviado. Salve o projeto.');}
+    const current=projectDraftRef.current;
+    if(!portfolio||!current)return;setBusy(true);clearNotice();
+    try{
+      const url=await hubApi.uploadPdf(file,portfolio.id);
+      const latest=projectDraftRef.current||current;
+      const updated={...latest,attachments:[...(latest.attachments||[]),{id:crypto.randomUUID(),type:'pdf' as const,title:file.name.replace(/\.pdf$/i,''),url}]};
+      setProjectDraft(updated);
+      if(updated.id){await persistExistingProject(updated);setMessage('PDF enviado e salvo.');}
+      else setMessage('PDF enviado. Como este projeto ainda é novo, clique em Salvar projeto.');
+    }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload do PDF.');}finally{setBusy(false);}
   }
 

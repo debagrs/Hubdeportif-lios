@@ -1,0 +1,25 @@
+# CHECKLIST — VERSÃO MULTIMÍDIA
+
+- [ ] Login da administradora funciona.
+- [ ] Login do estudante funciona.
+- [ ] Portfólio antigo abre sem perder conteúdo.
+- [ ] 1–6 colunas desktop funcionam.
+- [ ] colunas tablet funcionam.
+- [ ] colunas mobile funcionam.
+- [ ] Masonry funciona.
+- [ ] Editorial funciona.
+- [ ] Pilha funciona.
+- [ ] colunas da galeria mudam.
+- [ ] Google Fonts carrega uma fonte pesquisada fora da lista inicial.
+- [ ] busca de ícones retorna resultados.
+- [ ] ícone escolhido aparece no portfólio.
+- [ ] SVG/PNG/WebP próprio pode ser enviado e aparece.
+- [ ] avatar e hero podem ser enviados.
+- [ ] capa e galeria podem ser enviadas.
+- [ ] PDF pode ser enviado e aberto.
+- [ ] links podem ser adicionados e abertos.
+- [ ] sketch p5.js roda.
+- [ ] embed externo abre quando o site de origem permite iframe.
+- [ ] `/portfolio/slug` permanece independente do LabInterface.
+- [ ] `/embed/slug` funciona dentro de iframe.
+- [ ] após sair e entrar novamente, Design System, anexos e interatividade persistem.

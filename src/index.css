@@ -600,3 +600,10 @@
   .attachment-editor { grid-template-columns:1fr; }
   .ds-current-icon { align-items:flex-start; flex-wrap:wrap; }
 }
+
+
+/* ===== correção de persistência/exibição de mídia ===== */
+.pf-media-fallback { width:100%; min-height:140px; display:grid; place-items:center; background:var(--pf-surface-alt); color:var(--pf-muted); border:1px dashed var(--pf-border); font:600 .72em/1.2 var(--pf-mono-font); letter-spacing:.08em; text-transform:uppercase; }
+.pf-project-media > .pf-media-fallback,.pf-hero-media > .pf-media-fallback,.pf-avatar > .pf-media-fallback { position:absolute; inset:0; height:100%; min-height:100%; }
+.pf-gallery .pf-media-fallback { aspect-ratio:1; min-height:0; border-radius:calc(var(--pf-radius) * .55); }
+.pf-gallery-after-overlay { margin:0; padding:12px; background:var(--pf-surface); border-top:var(--pf-border-width) solid var(--pf-border); }

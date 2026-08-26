@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Image, Layers3, UsersRound } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import HubHeader from '../components/HubHeader';
 import HubFooter from '../components/HubFooter';
@@ -86,27 +86,6 @@ export default function HubHome() {
           </div>
         </section>
 
-        <section className="lab-section lab-divider">
-          <div className="lab-container">
-            <div className="section-head">
-              <div><p className="lab-label" style={{ color: '#86EFAC' }}>SISTEMA COMPARTILHADO</p><h2>Uma base, cinco autorias</h2></div>
-            </div>
-            <div className="portfolio-grid">
-              <article className="portfolio-card" style={{ ['--student-accent' as string]: '#00FFFF' }}>
-                <div><UsersRound size={36} color="#00FFFF" /><h3>Acesso individual</h3><p>Cada estudante entra com e-mail e senha e só edita o próprio portfólio. A administração acompanha todos.</p></div>
-                <div className="portfolio-card-foot"><span>5 estudantes + admin</span></div>
-              </article>
-              <article className="portfolio-card" style={{ ['--student-accent' as string]: '#F48A79' }}>
-                <div><Image size={36} color="#F48A79" /><h3>Imagens sem GitHub</h3><p>Capas, imagem inicial e galerias são enviadas diretamente pelo painel para o armazenamento de mídia.</p></div>
-                <div className="portfolio-card-foot"><span>upload direto</span></div>
-              </article>
-              <article className="portfolio-card" style={{ ['--student-accent' as string]: '#86EFAC' }}>
-                <div><Layers3 size={36} color="#86EFAC" /><h3>Identidade própria</h3><p>A infraestrutura é comum, mas cada estudante controla um design system completo: paleta, tipografia, hierarquia, grid, cards, imagens, ícones, navegação, movimento e ordem das seções.</p></div>
-                <div className="portfolio-card-foot"><span>design system autoral</span></div>
-              </article>
-            </div>
-          </div>
-        </section>
       </main>
       <HubFooter />
     </div>

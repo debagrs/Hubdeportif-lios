@@ -41,8 +41,20 @@ const firstQuery = (value: string | string[] | undefined) => Array.isArray(value
 const noStore = (res: VercelResponse) => res.setHeader('Cache-Control', 'no-store, max-age=0');
 const safeSlug = (value: unknown) => text(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 72);
 const safeFilename = (value: unknown) => text(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').slice(-120) || 'imagem.webp';
-const jsonArray = (value: unknown) => Array.isArray(value) ? value : [];
-const jsonObject = (value: unknown, fallback: Row = {}) => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : fallback;
+const parseJsonValue = (value: unknown): unknown => {
+  if (typeof value !== 'string') return value;
+  const raw = value.trim();
+  if (!raw || (!raw.startsWith('[') && !raw.startsWith('{'))) return value;
+  try { return JSON.parse(raw); } catch { return value; }
+};
+const jsonArray = (value: unknown) => {
+  const parsed = parseJsonValue(value);
+  return Array.isArray(parsed) ? parsed : [];
+};
+const jsonObject = (value: unknown, fallback: Row = {}) => {
+  const parsed = parseJsonValue(value);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Row : fallback;
+};
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const escapeHtml = (value: unknown) => text(value).replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' }[char] || char));
 const safeHttpUrl = (value: unknown) => {

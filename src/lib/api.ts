@@ -51,11 +51,11 @@ async function uploadAsset(file: File, kind: UploadKind, portfolioId?: string) {
 }
 
 export const hubApi = {
-  health: () => request<{ ok:boolean; configured:boolean; emailConfigured:boolean; storageConfigured:boolean; mailProvider:string }>(endpoint('health')),
+  health: () => request<{ ok:boolean; configured:boolean; adminConfigured?:boolean; adminReady?:boolean; emailConfigured:boolean; storageConfigured:boolean; mailProvider:string }>(endpoint('health')),
   getPublicPortfolios: () => request<{ portfolios:PortfolioSummary[]; configured:boolean }>(endpoint('public-portfolios')),
   getPublicPortfolio: (slug:string) => request<{ portfolio:PortfolioDetail|null; configured:boolean }>(endpoint('public-portfolio',{slug})),
   session: () => request<{ authenticated:boolean; user:SessionUser|null }>(endpoint('session')),
-  login: (email:string,password:string) => request<{user:SessionUser}>(endpoint('login'),{method:'POST',body:JSON.stringify({email,password})}),
+  login: (email:string,password:string,expectedRole?:'admin'|'student') => request<{user:SessionUser}>(endpoint('login'),{method:'POST',body:JSON.stringify({email,password,expectedRole})}),
   logout: () => request<{ok:true}>(endpoint('logout'),{method:'POST',body:'{}'}),
   forgotPassword: (email:string) => request<{ok:true;message:string}>(endpoint('forgot-password'),{method:'POST',body:JSON.stringify({email})}),
   resetPassword: (token:string,password:string) => request<{ok:true}>(endpoint('reset-password'),{method:'POST',body:JSON.stringify({token,password})}),

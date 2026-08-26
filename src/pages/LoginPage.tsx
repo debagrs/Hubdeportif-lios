@@ -14,14 +14,14 @@ export default function LoginPage() {
 
   useEffect(() => {
     hubApi.health().then(r => setConfigured(r.configured)).catch(() => setConfigured(false));
-    hubApi.session().then(r => { if (r.authenticated) navigate('/painel', { replace: true }); }).catch(() => undefined);
+    hubApi.session().then(r => { if (r.authenticated && r.user?.role === 'student') navigate('/painel', { replace: true }); }).catch(() => undefined);
   }, [navigate]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError(''); setBusy(true);
     try {
-      await hubApi.login(email, password);
+      await hubApi.login(email, password, 'student');
       navigate('/painel');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Não foi possível entrar.');
@@ -37,7 +37,7 @@ export default function LoginPage() {
             <div style={{ width: 64, height: 64, borderRadius: 22, display:'grid', placeItems:'center', background:'rgba(0,255,255,.08)', border:'1px solid rgba(0,255,255,.2)', color:'#00FFFF' }}><ShieldCheck size={30}/></div>
             <p className="lab-kicker" style={{ marginTop: 28 }}>ACESSO AO HUB</p>
             <h1>Área de acesso</h1>
-            <p style={{ color:'#9ca3af', marginBottom:28 }}>Estudantes e administração entram pelo mesmo acesso seguro.</p>
+            <p style={{ color:'#9ca3af', marginBottom:28 }}>Acesso dos estudantes. A professora entra pela área administrativa separada.</p>
             {!configured && <div className="lab-message">O acesso está temporariamente indisponível. Tente novamente mais tarde.</div>}
             {error && <div className="lab-message error">{error}</div>}
             <div className="lab-form-grid">
@@ -49,6 +49,7 @@ export default function LoginPage() {
               <div style={{ display:'flex', flexWrap:'wrap', gap:14 }}>
                 <Link className="lab-text-link" to="/esqueci-senha">Esqueci minha senha</Link>
                 <Link className="lab-text-link" to="/criar-conta">Criar minha conta</Link>
+                <Link className="lab-text-link" to="/admin">Sou administradora</Link>
               </div>
               <Link className="lab-secondary" to="/"><ArrowLeft size={16}/> Voltar ao Hub</Link>
             </div>

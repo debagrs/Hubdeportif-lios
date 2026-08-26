@@ -206,6 +206,11 @@ async function ensureSchema() {
         )`,
         `ALTER TABLE hub_projects ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`,
         `ALTER TABLE hub_projects ADD COLUMN IF NOT EXISTS interactive JSONB NOT NULL DEFAULT '{}'::jsonb`,
+        `CREATE TABLE IF NOT EXISTS hub_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL DEFAULT '',
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`,
         `CREATE INDEX IF NOT EXISTS hub_projects_portfolio_idx ON hub_projects(portfolio_id, published, featured DESC, sort_order ASC)`
       ];
       for (const statement of statements) await query(statement);
@@ -233,54 +238,47 @@ function verifyPassword(password: string, stored: string) {
 async function seedAdmin() {
   const email = normalizeEmail(process.env.HUB_ADMIN_EMAIL);
   const password = text(process.env.HUB_ADMIN_PASSWORD);
-
-  // A conta administradora é controlada pelas variáveis da Vercel.
-  // Assim, se HUB_ADMIN_EMAIL ou HUB_ADMIN_PASSWORD forem alterados e
-  // houver um novo deploy, o usuário admin existente é sincronizado
-  // automaticamente em vez de continuar preso às credenciais antigas.
   if (!email || !password) return;
 
-  const admins = await query('SELECT id,email,password_hash FROM hub_users WHERE role=$1 ORDER BY created_at ASC LIMIT 1', ['admin']);
+  // A Vercel serve como credencial de bootstrap/recuperação da administradora.
+  // O fingerprint evita um problema importante: depois que a professora muda a senha
+  // no próprio painel, um cold start não deve restaurar a senha antiga da Vercel.
+  // Se HUB_ADMIN_EMAIL ou HUB_ADMIN_PASSWORD forem realmente alterados na Vercel,
+  // o fingerprint muda e a nova credencial é sincronizada uma única vez.
+  const fingerprint = sha256(`${email}\n${password}`);
+  const settingRows = await query("SELECT value FROM hub_settings WHERE key='admin_env_fingerprint' LIMIT 1");
+  const lastFingerprint = text(settingRows[0]?.value);
+
+  const admins = await query('SELECT id,email,password_hash,email_verified FROM hub_users WHERE role=$1 ORDER BY created_at ASC LIMIT 1', ['admin']);
   const admin = admins[0];
 
   if (!admin) {
     const emailOwner = await query('SELECT id,role FROM hub_users WHERE email=$1 LIMIT 1', [email]);
-    if (emailOwner[0]) {
-      throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
-    }
-
-    await query(
-      'INSERT INTO hub_users (id,email,password_hash,role,email_verified) VALUES ($1,$2,$3,$4,TRUE)',
-      [randomUUID(), email, hashPassword(password), 'admin'],
-    );
+    if (emailOwner[0]) throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
+    const id = randomUUID();
+    await query('INSERT INTO hub_users (id,email,password_hash,role,email_verified) VALUES ($1,$2,$3,$4,TRUE)', [id,email,hashPassword(password),'admin']);
+    await query("INSERT INTO hub_settings (key,value) VALUES ('admin_env_fingerprint',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", [fingerprint]);
     return;
   }
 
-  const emailChanged = normalizeEmail(admin.email) !== email;
-  const passwordChanged = !verifyPassword(password, text(admin.password_hash));
-
-  if (!emailChanged && !passwordChanged) {
-    if (!admin.email_verified) {
-      await query('UPDATE hub_users SET email_verified=TRUE,updated_at=NOW() WHERE id=$1', [admin.id]);
-    }
+  // Primeira execução após esta correção: registra o estado atual sem sobrescrever
+  // uma senha que possa ter sido alterada legitimamente dentro do painel.
+  if (!lastFingerprint) {
+    await query("INSERT INTO hub_settings (key,value) VALUES ('admin_env_fingerprint',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", [fingerprint]);
+    if (!admin.email_verified) await query('UPDATE hub_users SET email_verified=TRUE,updated_at=NOW() WHERE id=$1',[admin.id]);
     return;
   }
 
-  if (emailChanged) {
-    const emailOwner = await query('SELECT id,role FROM hub_users WHERE email=$1 AND id<>$2 LIMIT 1', [email, admin.id]);
-    if (emailOwner[0]) {
-      throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
-    }
+  if (lastFingerprint === fingerprint) {
+    if (!admin.email_verified) await query('UPDATE hub_users SET email_verified=TRUE,updated_at=NOW() WHERE id=$1',[admin.id]);
+    return;
   }
 
-  await query(
-    'UPDATE hub_users SET email=$1,password_hash=$2,email_verified=TRUE,updated_at=NOW() WHERE id=$3',
-    [email, passwordChanged ? hashPassword(password) : admin.password_hash, admin.id],
-  );
-
-  // Se a credencial administrativa mudou, encerra sessões anteriores.
-  // O próximo login já usa os valores atuais de HUB_ADMIN_EMAIL/HUB_ADMIN_PASSWORD.
-  await query('DELETE FROM hub_sessions WHERE user_id=$1', [admin.id]);
+  const emailOwner = await query('SELECT id,role FROM hub_users WHERE email=$1 AND id<>$2 LIMIT 1', [email, admin.id]);
+  if (emailOwner[0]) throw new Error('HUB_ADMIN_EMAIL já está sendo usado por outra conta no Hub. Use outro e-mail administrativo na Vercel.');
+  await query('UPDATE hub_users SET email=$1,password_hash=$2,email_verified=TRUE,updated_at=NOW() WHERE id=$3',[email,hashPassword(password),admin.id]);
+  await query('DELETE FROM hub_sessions WHERE user_id=$1',[admin.id]);
+  await query("UPDATE hub_settings SET value=$1,updated_at=NOW() WHERE key='admin_env_fingerprint'",[fingerprint]);
 }
 
 function appUrl(req?: VercelRequest) {
@@ -523,9 +521,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (action === 'login' && req.method === 'POST') {
-      const data = body(req); const email=normalizeEmail(data.email); const password=text(data.password);
+      const data = body(req); const email=normalizeEmail(data.email); const password=text(data.password); const expectedRole=text(data.expectedRole);
       const rows=await query('SELECT * FROM hub_users WHERE email=$1 LIMIT 1',[email]);
       if (!rows[0] || !verifyPassword(password,rows[0].password_hash)) return res.status(401).json({ error:'E-mail ou senha incorretos.' });
+      if (expectedRole === 'admin' && rows[0].role !== 'admin') return res.status(403).json({ error:'Esta é uma conta de estudante. Para a administração, use o e-mail da professora.' });
+      if (expectedRole === 'student' && rows[0].role !== 'student') return res.status(403).json({ error:'Esta é a conta da administradora. Entre pela área da professora.' });
       if (!rows[0].email_verified && rows[0].role === 'student') return res.status(403).json({ error:'Confirme seu e-mail antes do primeiro acesso.' });
       const raw=randomBytes(32).toString('base64url');
       await query('DELETE FROM hub_sessions WHERE user_id=$1 AND expires_at<NOW()',[rows[0].id]);

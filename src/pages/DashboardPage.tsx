@@ -11,7 +11,7 @@ import { mergeTheme } from '../theme/portfolioTheme';
 import type { IconRole, PortfolioDetail, Project, SessionUser, StudentAccount, StudentInvite } from '../types';
 
 type Tab = 'portfolio' | 'design' | 'projects' | 'students' | 'account' | 'system';
-type Health = { ok: boolean; configured: boolean; emailConfigured: boolean; storageConfigured: boolean; mailProvider: string };
+type Health = { ok: boolean; configured: boolean; emailConfigured: boolean; storageConfigured: boolean; storageVerified?: boolean; storageStatus?: string; mailProvider: string };
 
 const emptyProject = (portfolioId = ''): Project => ({
   id:'', portfolioId, slug:'', title:'', subtitle:'', category:'Projeto de Design', year:String(new Date().getFullYear()), summary:'', body:'', coverUrl:'', gallery:[], externalUrl:'', tags:[], attachments:[], interactive:{type:'none',height:520,position:'after-text'}, featured:false, published:true, sortOrder:0,
@@ -87,13 +87,10 @@ export default function DashboardPage() {
   async function uploadPortfolioImage(file: File,kind:'avatar'|'hero'){
     if(!portfolio)return;setBusy(true);clearNotice();
     try{
-      const url=await hubApi.uploadImage(file,kind,portfolio.id);
-      // A URL só entra no estado depois que o backend confirma que ela foi gravada no Neon.
-      // Isso evita a falsa prévia: imagem aparece no painel, mas desaparece ao recarregar/publicar.
-      const committed=await hubApi.commitUpload({kind,url,portfolioId:portfolio.id});
-      if(!committed.portfolio)throw new Error('A imagem chegou ao Cloudinary, mas o backend não confirmou a gravação no portfólio.');
-      setPortfolio({...committed.portfolio,theme:mergeTheme(committed.portfolio.theme)});
-      setMessage('Imagem enviada ao Cloudinary, gravada no Neon e disponível no portfólio público.');
+      const result=await hubApi.uploadImage(file,kind,portfolio.id);
+      if(!result.portfolio)throw new Error('O backend não confirmou a gravação da imagem no portfólio.');
+      setPortfolio({...result.portfolio,theme:mergeTheme(result.portfolio.theme)});
+      setMessage('Imagem recebida pelo backend, enviada ao Cloudinary e gravada no portfólio.');
       if(isAdmin)await refreshStudents();
     }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
@@ -103,23 +100,21 @@ export default function DashboardPage() {
     const current=projectDraftRef.current;
     if(!portfolio||!current)return;setBusy(true);clearNotice();
     try{
-      const url=await hubApi.uploadImage(file,kind,portfolio.id);
       const latest=projectDraftRef.current||current;
+      const result=await hubApi.uploadImage(file,kind,portfolio.id,latest.id||undefined);
       if(latest.id){
-        const committed=await hubApi.commitUpload({kind,url,portfolioId:portfolio.id,projectId:latest.id});
-        if(!committed.project)throw new Error('A imagem chegou ao Cloudinary, mas o backend não confirmou a gravação no projeto.');
-        const saved=committed.project;
+        if(!result.project)throw new Error('O backend recebeu a imagem, mas não confirmou a gravação no projeto.');
+        const saved=result.project;
         setProjects(items=>items.map(item=>item.id===saved.id?saved:item));
-        // Preserva os demais campos ainda não salvos no formulário e atualiza apenas a mídia confirmada.
         setProjectDraft(draft=>draft?{
           ...draft,
           ...(kind==='cover'?{coverUrl:saved.coverUrl}:{gallery:saved.gallery}),
         }:draft);
-        setMessage('Imagem enviada ao Cloudinary, gravada no Neon e disponível no portfólio público.');
+        setMessage('Imagem recebida pelo backend, enviada ao Cloudinary e gravada no projeto.');
       }else{
-        const updated=kind==='cover'?{...latest,coverUrl:url}:{...latest,gallery:[...(latest.gallery||[]),url]};
+        const updated=kind==='cover'?{...latest,coverUrl:result.url}:{...latest,gallery:[...(latest.gallery||[]),result.url]};
         setProjectDraft(updated);
-        setMessage('Imagem enviada e exibida na prévia. Como este projeto ainda é novo, clique em Salvar projeto para publicá-la.');
+        setMessage('Imagem enviada. Este projeto ainda é novo: clique em Salvar projeto para publicá-la.');
       }
     }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
@@ -168,7 +163,8 @@ export default function DashboardPage() {
 
   const title=isAdmin?'Administração do Hub':'Meu portfólio';
   const selectedStudent=students.find(s=>s.id===selectedStudentId);
-  const systemReady=Boolean(health?.configured&&health?.storageConfigured&&health?.emailConfigured);
+  const cloudinaryReady=Boolean(health?.storageVerified ?? health?.storageConfigured);
+  const systemReady=Boolean(health?.configured&&cloudinaryReady&&health?.emailConfigured);
 
   return <div className="lab-page"><HubHeader compact sessionLabel={isAdmin?'Administração':'Meu painel'}/><main className="lab-main"><section className="lab-section"><div className="lab-container">
     <div className="section-head"><div><p className="lab-kicker">PAINEL • LABINTERFACE</p><h2>{title}</h2><p className="dashboard-help">{isAdmin?'Esta é a conta da professora. Cadastre novos estudantes em Estudantes e só abra um portfólio quando quiser editá-lo.':'Este painel controla somente o seu portfólio autoral.'}</p></div><div className="dashboard-actions" style={{marginTop:0}}>{portfolio?.slug&&<><a className="lab-secondary" href={`/portfolio/${portfolio.slug}`} target="_blank" rel="noreferrer"><ExternalLink size={16}/> Ver site</a><a className="lab-secondary" href={`/embed/${portfolio.slug}`} target="_blank" rel="noreferrer"><Eye size={16}/> Ver versão embed</a></>}<button className="lab-secondary" onClick={logout}><LogOut size={16}/> Sair</button></div></div>
@@ -248,7 +244,7 @@ export default function DashboardPage() {
 
       {tab==='account'&&<form className="dashboard-card" onSubmit={changePassword}><p className="lab-label" style={{color:'#D2A979'}}>SEGURANÇA • {isAdmin?'ADMINISTRADORA':'ESTUDANTE'}</p><h2>Alterar senha</h2><p className="dashboard-help">Você está alterando a senha da conta <strong>{user?.email}</strong>{isAdmin?' — a conta da professora.':' — somente a sua conta de estudante.'}</p><div className="lab-form-grid"><div className="lab-field"><label>Senha atual</label><input type="password" required value={passwords.current} onChange={e=>setPasswords({...passwords,current:e.target.value})}/></div><div className="lab-field"><label>Nova senha</label><input type="password" minLength={8} required value={passwords.next} onChange={e=>setPasswords({...passwords,next:e.target.value})}/></div><div className="lab-field"><label>Repetir nova senha</label><input type="password" minLength={8} required value={passwords.confirm} onChange={e=>setPasswords({...passwords,confirm:e.target.value})}/></div></div><div className="dashboard-actions"><button className="lab-primary" disabled={busy}><KeyRound size={17}/> Alterar senha</button></div></form>}
 
-      {tab==='system'&&isAdmin&&<div className="dashboard-card"><p className="lab-label" style={{color:systemReady?'#86EFAC':'#F48A79'}}>INFRAESTRUTURA</p><h2>Integrações</h2><p className="dashboard-help">O design system dos alunos fica no Neon como JSON de tokens; as imagens continuam no Cloudinary.</p><div className="integration-grid"><IntegrationStatus name="Neon" description="contas, conteúdo e design systems" ready={Boolean(health?.configured)}/><IntegrationStatus name="Cloudinary" description="imagens e galerias" ready={Boolean(health?.storageConfigured)}/><IntegrationStatus name={health?.mailProvider==='brevo'?'Brevo':'Resend'} description="validação e recuperação" ready={Boolean(health?.emailConfigured)}/></div><div className="dashboard-actions"><button className="lab-secondary" onClick={refreshHealth}><Settings2 size={16}/> Verificar novamente</button></div>{selectedStudent&&<div className="lab-message" style={{marginTop:18}}>Em edição: <strong>{selectedStudent.displayName}</strong>.</div>}</div>}
+      {tab==='system'&&isAdmin&&<div className="dashboard-card"><p className="lab-label" style={{color:systemReady?'#86EFAC':'#F48A79'}}>INFRAESTRUTURA</p><h2>Integrações</h2><p className="dashboard-help">O design system dos alunos fica no Neon como JSON de tokens; as imagens continuam no Cloudinary.</p><div className="integration-grid"><IntegrationStatus name="Neon" description="contas, conteúdo e design systems" ready={Boolean(health?.configured)}/><IntegrationStatus name="Cloudinary" description={health?.storageStatus==='invalid-credentials'?'credenciais recusadas pelo Cloudinary':health?.storageStatus==='unreachable'?'Cloudinary indisponível no teste':health?.storageStatus==='missing'?'variáveis não configuradas':'imagens e galerias'} ready={cloudinaryReady}/><IntegrationStatus name={health?.mailProvider==='brevo'?'Brevo':'Resend'} description="validação e recuperação" ready={Boolean(health?.emailConfigured)}/></div><div className="dashboard-actions"><button className="lab-secondary" onClick={refreshHealth}><Settings2 size={16}/> Verificar novamente</button></div>{selectedStudent&&<div className="lab-message" style={{marginTop:18}}>Em edição: <strong>{selectedStudent.displayName}</strong>.</div>}</div>}
 
     </div></div>
   </div></section></main></div>;

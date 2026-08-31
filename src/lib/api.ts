@@ -16,23 +16,54 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+const MAX_SERVER_IMAGE_BYTES = 2_200_000;
+
 async function imageToWebp(file: File): Promise<File> {
   if (!file.type.startsWith('image/') || file.type === 'image/svg+xml') return file;
-  if (file.size <= 850_000 && file.type === 'image/webp') return file;
   try {
     const bitmap = await createImageBitmap(file);
-    const maxSide = 2000;
-    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-    const context = canvas.getContext('2d', { alpha: true }); if (!context) return file;
-    context.drawImage(bitmap, 0, 0, width, height); bitmap.close?.();
-    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/webp', 0.84));
-    if (!blob || blob.size >= file.size) return file;
+    let width = bitmap.width;
+    let height = bitmap.height;
+    const maxSide = 1800;
+    const firstScale = Math.min(1, maxSide / Math.max(width, height));
+    width = Math.max(1, Math.round(width * firstScale));
+    height = Math.max(1, Math.round(height * firstScale));
+    let quality = 0.84;
+    let blob: Blob | null = null;
+
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d', { alpha: true });
+      if (!context) break;
+      context.drawImage(bitmap, 0, 0, width, height);
+      blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+      if (blob && blob.size <= MAX_SERVER_IMAGE_BYTES) break;
+      quality = Math.max(0.56, quality - 0.07);
+      if (attempt >= 3) {
+        width = Math.max(1, Math.round(width * 0.82));
+        height = Math.max(1, Math.round(height * 0.82));
+      }
+    }
+    bitmap.close?.();
+    if (!blob) throw new Error('Não foi possível converter a imagem.');
+    if (blob.size > MAX_SERVER_IMAGE_BYTES) throw new Error('A imagem continua muito grande após a otimização automática.');
     const stem = file.name.replace(/\.[^.]+$/, '') || 'imagem';
     return new File([blob], `${stem}.webp`, { type: 'image/webp', lastModified: Date.now() });
-  } catch { return file; }
+  } catch (error) {
+    if (file.size <= MAX_SERVER_IMAGE_BYTES && ['image/jpeg','image/png','image/webp','image/avif'].includes(file.type)) return file;
+    throw error instanceof Error ? error : new Error('Não foi possível preparar a imagem para envio.');
+  }
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  return await new Promise<string>((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Não foi possível ler a imagem.'));
+    reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 type UploadKind = 'avatar'|'hero'|'cover'|'gallery'|'custom-icon'|'pdf';
@@ -64,8 +95,26 @@ async function uploadAsset(file: File, kind: UploadKind, portfolioId?: string) {
   return url;
 }
 
+async function uploadImageThroughBackend(file: File, kind: 'avatar'|'hero'|'cover'|'gallery', portfolioId?: string, projectId?: string) {
+  const prepared = await imageToWebp(file);
+  if (prepared.size > MAX_SERVER_IMAGE_BYTES) throw new Error('A foto ficou grande demais para o envio.');
+  const dataUrl = await fileToDataUrl(prepared);
+  return request<{url:string;portfolio?:PortfolioDetail;project?:Project}>(endpoint('upload-image'), {
+    method:'POST',
+    body:JSON.stringify({
+      filename:prepared.name,
+      contentType:prepared.type,
+      size:prepared.size,
+      kind,
+      portfolioId,
+      projectId,
+      dataUrl,
+    }),
+  });
+}
+
 export const hubApi = {
-  health: () => request<{ ok:boolean; configured:boolean; adminConfigured?:boolean; adminReady?:boolean; emailConfigured:boolean; storageConfigured:boolean; mailProvider:string }>(endpoint('health')),
+  health: () => request<{ ok:boolean; configured:boolean; adminConfigured?:boolean; adminReady?:boolean; emailConfigured:boolean; storageConfigured:boolean; storageVerified?:boolean; storageStatus?:string; mailProvider:string }>(endpoint('health')),
   getPublicPortfolios: () => request<{ portfolios:PortfolioSummary[]; configured:boolean }>(endpoint('public-portfolios')),
   getPublicPortfolio: (slug:string) => request<{ portfolio:PortfolioDetail|null; configured:boolean }>(endpoint('public-portfolio',{slug})),
   session: () => request<{ authenticated:boolean; user:SessionUser|null }>(endpoint('session')),
@@ -92,8 +141,7 @@ export const hubApi = {
   resendInvite: (id:string) => request<{ok:true}>(endpoint('resend-invite'),{method:'POST',body:JSON.stringify({id})}),
   listGoogleFonts: () => request<{fonts:GoogleFontItem[]}>(endpoint('font-catalog')),
   searchIcons: (q:string) => request<{icons:string[]}>(endpoint('icon-search',{q})),
-  commitUpload: (payload:{kind:'avatar'|'hero'|'cover'|'gallery';url:string;portfolioId:string;projectId?:string}) => request<{portfolio?:PortfolioDetail;project?:Project}>(endpoint('commit-upload'),{method:'POST',body:JSON.stringify(payload)}),
-  uploadImage: (file:File,kind:'avatar'|'hero'|'cover'|'gallery',portfolioId?:string) => uploadAsset(file,kind,portfolioId),
+  uploadImage: (file:File,kind:'avatar'|'hero'|'cover'|'gallery',portfolioId?:string,projectId?:string) => uploadImageThroughBackend(file,kind,portfolioId,projectId),
   uploadCustomIcon: (file:File,portfolioId?:string) => uploadAsset(file,'custom-icon',portfolioId),
   uploadPdf: (file:File,portfolioId?:string) => uploadAsset(file,'pdf',portfolioId),
 };

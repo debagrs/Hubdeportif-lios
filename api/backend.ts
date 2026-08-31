@@ -9,6 +9,7 @@ const COOKIE_NAME = 'labinterface_hub_session';
 const SESSION_DAYS = 14;
 const MAX_STUDENTS = Number(process.env.MAX_STUDENTS || 5);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_SERVER_IMAGE_BYTES = 2_200_000; // mantém o JSON do upload abaixo do limite da Vercel após Base64
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
 const MAX_ICON_BYTES = 2 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif']);
@@ -58,6 +59,45 @@ function cloudinaryConfig() {
   }
 }
 const storageConfigured = () => Boolean(cloudinaryConfig());
+
+const cloudinaryAuthHeader = (config: { apiKey:string; apiSecret:string }) =>
+  `Basic ${Buffer.from(`${config.apiKey}:${config.apiSecret}`).toString('base64')}`;
+
+async function verifyCloudinary() {
+  const config = cloudinaryConfig();
+  if (!config) return { ok:false, status:'missing' as const };
+  try {
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/ping`, {
+      headers: { Authorization: cloudinaryAuthHeader(config) },
+    });
+    if (response.ok) return { ok:true, status:'ready' as const };
+    return { ok:false, status:response.status === 401 ? 'invalid-credentials' as const : 'cloudinary-error' as const };
+  } catch {
+    return { ok:false, status:'unreachable' as const };
+  }
+}
+
+async function uploadImageFromBackend(dataUrl: string, folder: string, publicId: string) {
+  const config = cloudinaryConfig();
+  if (!config) throw new Error('O Cloudinary não está configurado na Vercel.');
+  const form = new FormData();
+  form.append('file', dataUrl);
+  form.append('folder', folder);
+  form.append('public_id', publicId);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/image/upload`, {
+    method: 'POST',
+    headers: { Authorization: cloudinaryAuthHeader(config) },
+    body: form,
+  });
+  const result:any = await response.json().catch(() => ({}));
+  if (!response.ok || !result?.secure_url) {
+    const detail = text(result?.error?.message || result?.message || `HTTP ${response.status}`);
+    throw new Error(`Cloudinary recusou a imagem: ${detail || 'erro desconhecido'}`);
+  }
+  const url = isCloudinaryDeliveryUrl(result.secure_url);
+  if (!url) throw new Error('O Cloudinary recebeu a imagem, mas devolveu uma URL pública inválida.');
+  return url;
+}
 const normalizeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
 const text = (value: unknown) => String(value ?? '').trim();
 const body = (req: VercelRequest): Row => typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
@@ -467,6 +507,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const adminRows = await query("SELECT id FROM hub_users WHERE role='admin' LIMIT 1");
         adminReady = Boolean(adminRows[0]);
       }
+      const storage = await verifyCloudinary();
       return res.status(200).json({
         ok:true,
         configured:dbConfigured(),
@@ -474,6 +515,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         adminReady,
         emailConfigured:mailConfigured(),
         storageConfigured:storageConfigured(),
+        storageVerified:storage.ok,
+        storageStatus:storage.status,
         mailProvider:MAIL_PROVIDER,
       });
     }
@@ -763,6 +806,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const data:any=await response.json(); const icon=data?.icons?.[name]; if(!icon?.body)return res.status(404).json({error:'Ícone não encontrado.'});
         return res.status(200).json({body:icon.body,width:Number(icon.width||data.width||24),height:Number(icon.height||data.height||24)});
       }catch{return res.status(404).json({error:'Ícone não encontrado.'});}
+    }
+
+    if(action==='upload-image' && req.method==='POST'){
+      const user=await requireUser(req,res); if(!user)return;
+      const data=body(req);
+      const portfolioId=text(data.portfolioId||user.portfolioId);
+      const projectId=text(data.projectId);
+      const kind=text(data.kind);
+      const contentType=text(data.contentType).toLowerCase();
+      const size=Number(data.size||0);
+      const dataUrl=String(data.dataUrl||'');
+      if(!['avatar','hero','cover','gallery'].includes(kind))return res.status(400).json({error:'Tipo de imagem inválido.'});
+      if(!portfolioId||!(await canEditPortfolio(user,portfolioId)))return res.status(403).json({error:'Portfólio não autorizado.'});
+      if(!IMAGE_TYPES.has(contentType) && contentType!=='image/jpg')return res.status(400).json({error:`Formato de imagem não aceito (${contentType||'tipo não identificado'}).`});
+      if(size<=0||size>MAX_SERVER_IMAGE_BYTES)return res.status(400).json({error:'A imagem preparada ficou grande demais para o upload seguro. Tente outra imagem.'});
+      if(dataUrl.length>3_300_000)return res.status(400).json({error:'A imagem excedeu o limite de envio da API depois da conversão.'});
+      if(!dataUrl.startsWith(`data:${contentType};base64,`) || !/^[A-Za-z0-9+/=]+$/.test(dataUrl.slice(dataUrl.indexOf(',')+1)))return res.status(400).json({error:'Os dados da imagem estão inválidos.'});
+
+      const folder=`labinterface-portfolios/${portfolioId}/${kind}`;
+      const stem=safeFilename(data.filename).replace(/\.[^.]+$/,'').slice(0,70)||'imagem';
+      const publicId=`${randomUUID()}-${stem}`;
+      const url=await uploadImageFromBackend(dataUrl,folder,publicId);
+
+      if(kind==='avatar'||kind==='hero'){
+        const column=kind==='avatar'?'avatar_url':'hero_image_url';
+        await query(`UPDATE hub_portfolios SET ${column}=$1,updated_at=NOW() WHERE id=$2`,[url,portfolioId]);
+        const row=(await query('SELECT p.*, (SELECT COUNT(*)::int FROM hub_projects pr WHERE pr.portfolio_id=p.id) AS project_count FROM hub_portfolios p WHERE id=$1 LIMIT 1',[portfolioId]))[0];
+        if(!row)return res.status(404).json({error:'Portfólio não encontrado.'});
+        const portfolio=mapPortfolio(row);
+        const projects=await query('SELECT * FROM hub_projects WHERE portfolio_id=$1 ORDER BY featured DESC,sort_order ASC,year DESC,title ASC',[portfolioId]);
+        portfolio.projects=projects.map(mapProject);
+        return res.status(200).json({url,portfolio});
+      }
+
+      if(projectId){
+        const rows=await query('SELECT * FROM hub_projects WHERE id=$1 AND portfolio_id=$2 LIMIT 1',[projectId,portfolioId]);
+        if(!rows[0])return res.status(404).json({error:'Projeto não encontrado.'});
+        if(kind==='cover')await query('UPDATE hub_projects SET cover_url=$1,updated_at=NOW() WHERE id=$2',[url,projectId]);
+        else{
+          const gallery=jsonArray(rows[0].gallery).map(safeHttpUrl).filter(Boolean);
+          if(!gallery.includes(url))gallery.push(url);
+          await query('UPDATE hub_projects SET gallery=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(gallery),projectId]);
+        }
+        const saved=(await query('SELECT * FROM hub_projects WHERE id=$1',[projectId]))[0];
+        return res.status(200).json({url,project:mapProject(saved)});
+      }
+
+      // Projeto novo: ainda não existe linha no Neon. A URL volta para o formulário e será
+      // persistida junto com o restante do projeto quando a pessoa clicar em Salvar projeto.
+      return res.status(200).json({url});
     }
 
     if(action==='sign-upload' && req.method==='POST'){

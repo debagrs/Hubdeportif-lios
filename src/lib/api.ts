@@ -39,15 +39,29 @@ type UploadKind = 'avatar'|'hero'|'cover'|'gallery'|'custom-icon'|'pdf';
 
 async function uploadAsset(file: File, kind: UploadKind, portfolioId?: string) {
   const prepared = ['avatar','hero','cover','gallery'].includes(kind) ? await imageToWebp(file) : file;
-  const ticket = await request<{ uploadUrl:string; apiKey:string; timestamp:number; signature:string; folder:string; publicId:string; resourceType:string }>(endpoint('sign-upload'), {
+  const ticket = await request<{ uploadUrl:string; apiKey:string; signature:string; uploadParams:Record<string,string|number>; resourceType:string }>(endpoint('sign-upload'), {
     method:'POST', body:JSON.stringify({ filename:prepared.name, contentType:prepared.type, size:prepared.size, kind, portfolioId }),
   });
   const form = new FormData();
-  form.append('file',prepared); form.append('api_key',ticket.apiKey); form.append('timestamp',String(ticket.timestamp)); form.append('signature',ticket.signature); form.append('folder',ticket.folder); form.append('public_id',ticket.publicId);
-  const upload = await fetch(ticket.uploadUrl,{method:'POST',body:form});
-  const result = await upload.json().catch(()=>({}));
-  if(!upload.ok || !result?.secure_url) throw new Error(result?.error?.message || 'O Cloudinary não conseguiu receber o arquivo.');
-  return String(result.secure_url);
+  form.append('file',prepared);
+  form.append('api_key',ticket.apiKey);
+  form.append('signature',ticket.signature);
+  Object.entries(ticket.uploadParams || {}).forEach(([key,value])=>form.append(key,String(value)));
+
+  let upload: Response;
+  try {
+    upload = await fetch(ticket.uploadUrl,{method:'POST',body:form});
+  } catch {
+    throw new Error('O navegador não conseguiu alcançar o Cloudinary. Verifique a conexão e a configuração do Cloudinary na Vercel.');
+  }
+  const result = await upload.json().catch(()=>({} as any));
+  if(!upload.ok || !result?.secure_url) {
+    const detail = result?.error?.message || result?.message || `HTTP ${upload.status}`;
+    throw new Error(`Falha no Cloudinary: ${detail}`);
+  }
+  const url=String(result.secure_url || '');
+  if(!url.startsWith('https://res.cloudinary.com/')) throw new Error('O Cloudinary respondeu, mas não devolveu uma URL pública de imagem válida.');
+  return url;
 }
 
 export const hubApi = {
@@ -78,6 +92,7 @@ export const hubApi = {
   resendInvite: (id:string) => request<{ok:true}>(endpoint('resend-invite'),{method:'POST',body:JSON.stringify({id})}),
   listGoogleFonts: () => request<{fonts:GoogleFontItem[]}>(endpoint('font-catalog')),
   searchIcons: (q:string) => request<{icons:string[]}>(endpoint('icon-search',{q})),
+  commitUpload: (payload:{kind:'avatar'|'hero'|'cover'|'gallery';url:string;portfolioId:string;projectId?:string}) => request<{portfolio?:PortfolioDetail;project?:Project}>(endpoint('commit-upload'),{method:'POST',body:JSON.stringify(payload)}),
   uploadImage: (file:File,kind:'avatar'|'hero'|'cover'|'gallery',portfolioId?:string) => uploadAsset(file,kind,portfolioId),
   uploadCustomIcon: (file:File,portfolioId?:string) => uploadAsset(file,'custom-icon',portfolioId),
   uploadPdf: (file:File,portfolioId?:string) => uploadAsset(file,'pdf',portfolioId),

@@ -88,25 +88,15 @@ export default function DashboardPage() {
     if(!portfolio)return;setBusy(true);clearNotice();
     try{
       const url=await hubApi.uploadImage(file,kind,portfolio.id);
-      const updated={...portfolio,...(kind==='avatar'?{avatarUrl:url}:{heroImageUrl:url})};
-      setPortfolio(updated);
-      // O upload agora também persiste a URL imediatamente no Neon. Antes, a imagem
-      // podia aparecer na prévia e sumir no site público se o usuário não clicasse em Salvar.
-      const result=await hubApi.saveMyPortfolio({...updated,theme:mergeTheme(updated.theme)},isAdmin?selectedStudentId:undefined);
-      setPortfolio({...result.portfolio,theme:mergeTheme(result.portfolio.theme)});
-      setMessage('Imagem enviada e salva. Ela já está disponível no portfólio público.');
+      // A URL só entra no estado depois que o backend confirma que ela foi gravada no Neon.
+      // Isso evita a falsa prévia: imagem aparece no painel, mas desaparece ao recarregar/publicar.
+      const committed=await hubApi.commitUpload({kind,url,portfolioId:portfolio.id});
+      if(!committed.portfolio)throw new Error('A imagem chegou ao Cloudinary, mas o backend não confirmou a gravação no portfólio.');
+      setPortfolio({...committed.portfolio,theme:mergeTheme(committed.portfolio.theme)});
+      setMessage('Imagem enviada ao Cloudinary, gravada no Neon e disponível no portfólio público.');
       if(isAdmin)await refreshStudents();
     }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
-  }
-
-  async function persistExistingProject(updated:Project){
-    if(!portfolio||!updated.id)return updated;
-    const result=await hubApi.saveProject({...updated,portfolioId:portfolio.id,slug:updated.slug||slugify(updated.title)});
-    const saved=result.project;
-    setProjects(current=>current.some(item=>item.id===saved.id)?current.map(item=>item.id===saved.id?saved:item):[...current,saved]);
-    setProjectDraft(saved);
-    return saved;
   }
 
   async function uploadProjectImage(file:File,kind:'cover'|'gallery'){
@@ -115,13 +105,21 @@ export default function DashboardPage() {
     try{
       const url=await hubApi.uploadImage(file,kind,portfolio.id);
       const latest=projectDraftRef.current||current;
-      const updated=kind==='cover'?{...latest,coverUrl:url}:{...latest,gallery:[...(latest.gallery||[]),url]};
-      setProjectDraft(updated);
-      if(updated.id){
-        await persistExistingProject(updated);
-        setMessage('Imagem enviada e salva. Ela já está disponível no portfólio público.');
+      if(latest.id){
+        const committed=await hubApi.commitUpload({kind,url,portfolioId:portfolio.id,projectId:latest.id});
+        if(!committed.project)throw new Error('A imagem chegou ao Cloudinary, mas o backend não confirmou a gravação no projeto.');
+        const saved=committed.project;
+        setProjects(items=>items.map(item=>item.id===saved.id?saved:item));
+        // Preserva os demais campos ainda não salvos no formulário e atualiza apenas a mídia confirmada.
+        setProjectDraft(draft=>draft?{
+          ...draft,
+          ...(kind==='cover'?{coverUrl:saved.coverUrl}:{gallery:saved.gallery}),
+        }:draft);
+        setMessage('Imagem enviada ao Cloudinary, gravada no Neon e disponível no portfólio público.');
       }else{
-        setMessage('Imagem enviada. Como este projeto ainda é novo, clique em Salvar projeto para publicá-la.');
+        const updated=kind==='cover'?{...latest,coverUrl:url}:{...latest,gallery:[...(latest.gallery||[]),url]};
+        setProjectDraft(updated);
+        setMessage('Imagem enviada e exibida na prévia. Como este projeto ainda é novo, clique em Salvar projeto para publicá-la.');
       }
     }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload.');}finally{setBusy(false);}
@@ -135,7 +133,13 @@ export default function DashboardPage() {
       const latest=projectDraftRef.current||current;
       const updated={...latest,attachments:[...(latest.attachments||[]),{id:crypto.randomUUID(),type:'pdf' as const,title:file.name.replace(/\.pdf$/i,''),url}]};
       setProjectDraft(updated);
-      if(updated.id){await persistExistingProject(updated);setMessage('PDF enviado e salvo.');}
+      if(updated.id){
+        const result=await hubApi.saveProject({...updated,portfolioId:portfolio.id,slug:updated.slug||slugify(updated.title)});
+        const saved=result.project;
+        setProjects(items=>items.map(item=>item.id===saved.id?saved:item));
+        setProjectDraft(saved);
+        setMessage('PDF enviado e salvo.');
+      }
       else setMessage('PDF enviado. Como este projeto ainda é novo, clique em Salvar projeto.');
     }
     catch(e){setError(e instanceof Error?e.message:'Falha no upload do PDF.');}finally{setBusy(false);}

@@ -33,7 +33,31 @@ const dbConfigured = () => has('DATABASE_URL');
 const mailConfigured = () => MAIL_PROVIDER === 'brevo'
   ? has('BREVO_API_KEY') && has('BREVO_SENDER_EMAIL')
   : has('RESEND_API_KEY') && has('RESEND_FROM');
-const storageConfigured = () => ['CLOUDINARY_CLOUD_NAME','CLOUDINARY_API_KEY','CLOUDINARY_API_SECRET'].every(has);
+function cloudinaryConfig() {
+  const direct = {
+    cloudName: String(process.env.CLOUDINARY_CLOUD_NAME || '').trim(),
+    apiKey: String(process.env.CLOUDINARY_API_KEY || '').trim(),
+    apiSecret: String(process.env.CLOUDINARY_API_SECRET || '').trim(),
+  };
+  if (direct.cloudName && direct.apiKey && direct.apiSecret) return direct;
+
+  // Também aceita a variável única CLOUDINARY_URL, formato oficial do Cloudinary:
+  // cloudinary://API_KEY:API_SECRET@CLOUD_NAME
+  const rawUrl = String(process.env.CLOUDINARY_URL || '').trim();
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'cloudinary:' || !parsed.hostname || !parsed.username || !parsed.password) return null;
+    return {
+      cloudName: decodeURIComponent(parsed.hostname),
+      apiKey: decodeURIComponent(parsed.username),
+      apiSecret: decodeURIComponent(parsed.password),
+    };
+  } catch {
+    return null;
+  }
+}
+const storageConfigured = () => Boolean(cloudinaryConfig());
 const normalizeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
 const text = (value: unknown) => String(value ?? '').trim();
 const body = (req: VercelRequest): Row => typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
@@ -410,13 +434,26 @@ async function canEditPortfolio(user: AuthUser, portfolioId: string) {
   return Boolean(rows[0] && (user.role === 'admin' || rows[0].user_id === user.id));
 }
 
-function cloudinarySignature(params: Record<string, string | number>) {
+function cloudinarySignature(params: Record<string, string | number>, apiSecret: string) {
   const canonical = Object.entries(params)
     .filter(([, value]) => value !== '' && value !== undefined && value !== null)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
-  return createHash('sha1').update(`${canonical}${String(process.env.CLOUDINARY_API_SECRET)}`).digest('hex');
+  return createHash('sha1').update(`${canonical}${apiSecret}`).digest('hex');
+}
+
+function isCloudinaryDeliveryUrl(value: unknown) {
+  const url = safeHttpUrl(value);
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    // secure_url padrão do Cloudinary. Mantemos HTTPS obrigatório para não salvar URLs quebradas/inseguras.
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'res.cloudinary.com') return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -730,20 +767,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if(action==='sign-upload' && req.method==='POST'){
       const user=await requireUser(req,res); if(!user)return;
-      if(!storageConfigured())return res.status(503).json({error:'O Cloudinary ainda não foi configurado.'});
-      const data=body(req); const contentType=text(data.contentType); const size=Number(data.size||0); const kind=text(data.kind); const portfolioId=text(data.portfolioId||user.portfolioId);
+      const cloudinary=cloudinaryConfig();
+      if(!cloudinary)return res.status(503).json({error:'O Cloudinary não está configurado. Cadastre CLOUDINARY_CLOUD_NAME + CLOUDINARY_API_KEY + CLOUDINARY_API_SECRET, ou a variável única CLOUDINARY_URL.'});
+      const data=body(req); const contentType=text(data.contentType).toLowerCase(); const size=Number(data.size||0); const kind=text(data.kind); const portfolioId=text(data.portfolioId||user.portfolioId);
       const isPdf=kind==='pdf'; const isCustomIcon=kind==='custom-icon';
-      const allowed = isPdf ? PDF_TYPES.has(contentType) : isCustomIcon ? ICON_TYPES.has(contentType) : IMAGE_TYPES.has(contentType);
-      if(!allowed)return res.status(400).json({error:isPdf?'Use um arquivo PDF.':isCustomIcon?'Use SVG, PNG ou WebP para o ícone.':'Use JPG, PNG, WebP ou AVIF.'});
+      const imageTypeAllowed = IMAGE_TYPES.has(contentType) || contentType === 'image/jpg';
+      const allowed = isPdf ? PDF_TYPES.has(contentType) : isCustomIcon ? ICON_TYPES.has(contentType) : imageTypeAllowed;
+      if(!allowed)return res.status(400).json({error:isPdf?'Use um arquivo PDF.':isCustomIcon?'Use SVG, PNG ou WebP para o ícone.':`Formato de imagem não aceito (${contentType||'tipo não identificado'}). Use JPG, PNG, WebP ou AVIF.`});
       const max = isPdf ? MAX_PDF_BYTES : isCustomIcon ? MAX_ICON_BYTES : MAX_IMAGE_BYTES;
       if(size<=0||size>max)return res.status(400).json({error:`O arquivo precisa ter no máximo ${Math.round(max/1024/1024)} MB.`});
       if(!['avatar','hero','cover','gallery','custom-icon','pdf'].includes(kind))return res.status(400).json({error:'Tipo de upload inválido.'});
       if(!portfolioId||!(await canEditPortfolio(user,portfolioId)))return res.status(403).json({error:'Portfólio não autorizado.'});
       const timestamp=Math.floor(Date.now()/1000); const folder=`labinterface-portfolios/${portfolioId}/${kind}`;
       const stem=safeFilename(data.filename).replace(/\.[^.]+$/,'').slice(0,70)||'arquivo'; const publicId=`${randomUUID()}-${stem}${isPdf?'.pdf':''}`;
-      const params={folder,public_id:publicId,timestamp}; const signature=cloudinarySignature(params); const cloudName=String(process.env.CLOUDINARY_CLOUD_NAME);
+      const uploadParams={folder,public_id:publicId,timestamp};
+      const signature=cloudinarySignature(uploadParams,cloudinary.apiSecret);
       const resourceType=isPdf?'raw':'image';
-      return res.status(200).json({uploadUrl:`https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/${resourceType}/upload`,resourceType,cloudName,apiKey:String(process.env.CLOUDINARY_API_KEY),timestamp,signature,folder,publicId});
+      return res.status(200).json({
+        uploadUrl:`https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudinary.cloudName)}/${resourceType}/upload`,
+        resourceType,
+        cloudName:cloudinary.cloudName,
+        apiKey:cloudinary.apiKey,
+        signature,
+        uploadParams,
+      });
+    }
+
+    if(action==='commit-upload' && req.method==='POST'){
+      const user=await requireUser(req,res); if(!user)return;
+      const data=body(req);
+      const portfolioId=text(data.portfolioId||user.portfolioId);
+      const kind=text(data.kind);
+      const projectId=text(data.projectId);
+      const url=isCloudinaryDeliveryUrl(data.url);
+      if(!portfolioId||!(await canEditPortfolio(user,portfolioId)))return res.status(403).json({error:'Portfólio não autorizado.'});
+      if(!url)return res.status(400).json({error:'O Cloudinary não devolveu uma URL pública válida para este arquivo.'});
+
+      if(kind==='avatar'||kind==='hero'){
+        const column=kind==='avatar'?'avatar_url':'hero_image_url';
+        await query(`UPDATE hub_portfolios SET ${column}=$1,updated_at=NOW() WHERE id=$2`,[url,portfolioId]);
+        const row=(await query('SELECT p.*, (SELECT COUNT(*)::int FROM hub_projects pr WHERE pr.portfolio_id=p.id) AS project_count FROM hub_portfolios p WHERE id=$1 LIMIT 1',[portfolioId]))[0];
+        if(!row)return res.status(404).json({error:'Portfólio não encontrado.'});
+        const portfolio=mapPortfolio(row);
+        const projects=await query('SELECT * FROM hub_projects WHERE portfolio_id=$1 ORDER BY featured DESC,sort_order ASC,year DESC,title ASC',[portfolioId]);
+        portfolio.projects=projects.map(mapProject);
+        return res.status(200).json({portfolio});
+      }
+
+      if(kind==='cover'||kind==='gallery'){
+        if(!projectId)return res.status(400).json({error:'O projeto precisa estar salvo antes de confirmar esta imagem.'});
+        const rows=await query('SELECT * FROM hub_projects WHERE id=$1 AND portfolio_id=$2 LIMIT 1',[projectId,portfolioId]);
+        if(!rows[0])return res.status(404).json({error:'Projeto não encontrado.'});
+        if(kind==='cover') await query('UPDATE hub_projects SET cover_url=$1,updated_at=NOW() WHERE id=$2',[url,projectId]);
+        else {
+          const gallery=jsonArray(rows[0].gallery).map(safeHttpUrl).filter(Boolean);
+          if(!gallery.includes(url))gallery.push(url);
+          await query('UPDATE hub_projects SET gallery=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(gallery),projectId]);
+        }
+        const saved=(await query('SELECT * FROM hub_projects WHERE id=$1',[projectId]))[0];
+        return res.status(200).json({project:mapProject(saved)});
+      }
+
+      return res.status(400).json({error:'Este tipo de arquivo não usa confirmação automática.'});
     }
 
     return res.status(404).json({ error:'Rota não encontrada.' });
